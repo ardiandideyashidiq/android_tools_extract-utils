@@ -574,14 +574,28 @@ def write_product_packages(
 
     for part in ALL_PARTITIONS:
         wp(write_bin_package, part, 'bin', packages_ctx)
-
-    for file in base_file_tree:
+    # Handle overlay packages (RROs): collect package names from subdirectories
+    overlay_packages = []
+    for part in ALL_PARTITIONS:
+        overlay_tree = base_file_tree.filter_prefixed([part, 'overlay'])
+        subdirs = set()
+        for f in overlay_tree:
+            parts = f.dst.split('/')
+            if len(parts) >= 3:
+                subdirs.add(parts[2])
+        overlay_packages.extend(list(subdirs))
+    write_packages_inclusion(overlay_packages, ctx.product_mk_out)
+    # Filter out overlay files for unknown check and assertion
+    def is_overlay_file(f: File) -> bool:
+        return any(f.dst.startswith(f'{part}/overlay/') for part in ALL_PARTITIONS)
+    unknown_files = [f for f in base_file_tree if not is_overlay_file(f)]
+    for file in unknown_files:
         color_print(
             f'{file.dst}: does not match known package rules',
             color=Color.YELLOW,
         )
 
-    assert not list(base_file_tree)
+    assert not unknown_files
 
     write_packages_inclusion(package_names, ctx.product_mk_out)
 
