@@ -8,6 +8,8 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 from functools import partial
 from os import path
@@ -539,6 +541,7 @@ class ExtractUtilsModule:
             'failed': 0,
             'firmware': 0,
         }
+        self.__stats_lock = threading.Lock()
 
         self.blob_fixups = flatten_fixups(blob_fixups)
         self.lib_fixups = flatten_fixups(lib_fixups)
@@ -895,6 +898,10 @@ class ExtractUtilsModule:
 
         return False
 
+    def __increment_stat(self, key: str):
+        with self.__stats_lock:
+            self.stats[key] += 1
+
     def fixup_module_file(self, file: File, file_path: str) -> List[str]:
         # device path is needed for reading patches
         ctx = BlobFixupCtx(self.device_path)
@@ -950,7 +957,7 @@ class ExtractUtilsModule:
             return
 
         success(f'{file.dst}: fixed up')
-        self.stats['fixed_up'] += 1
+        self.__increment_stat('fixed_up')
 
         for description in descriptions:
             detail('-', description)
@@ -988,7 +995,7 @@ class ExtractUtilsModule:
             msg += f'and fixup hash {file.fixup_hash}'
 
         success(msg)
-        self.stats['fixed_up'] += 1
+        self.__increment_stat('fixed_up')
 
         for description in descriptions:
             detail('-', description)
@@ -1133,7 +1140,7 @@ class ExtractUtilsModule:
         allow_prohibited_files: bool = False,
     ) -> bool:
         if is_firmware:
-            self.stats['firmware'] += 1
+            self.__increment_stat('firmware')
 
         file_path = source.get_file_copy_path(file, vendor_path)
 
@@ -1154,7 +1161,7 @@ class ExtractUtilsModule:
             if copied:
                 if file.hash is None:
                     self.process_simple_file(file, file_path)
-                    self.stats['copied'] += 1
+                    self.__increment_stat('copied')
                     return True
 
                 process_result = self.process_pinned_file(
@@ -1164,19 +1171,19 @@ class ExtractUtilsModule:
                 )
 
                 if process_result is PinnedFileProcessResult.MATCH:
-                    self.stats['pinned_restored'] += 1
-                    self.stats['copied'] += 1
+                    self.__increment_stat('pinned_restored')
+                    self.__increment_stat('copied')
                     return True
 
                 if process_result is PinnedFileProcessResult.MISMATCH:
-                    self.stats['pinned_mismatch'] += 1
+                    self.__increment_stat('pinned_mismatch')
 
                 if process_result is PinnedFileProcessResult.BAD_FIXUP:
                     # Error out at the end if there's a fixup hash but
                     # there's no fixup function or if the pinned hash
                     # matches the file hash but the fixup hash does not match
                     # Both of these cases denote a bad fixup function
-                    self.stats['failed'] += 1
+                    self.__increment_stat('failed')
                     return False
             elif file.hash is not None:
                 error(
@@ -1193,7 +1200,7 @@ class ExtractUtilsModule:
             error(
                 f'{file.dst}: file not found',
             )
-            self.stats['failed'] += 1
+            self.__increment_stat('failed')
             return False
 
         if not allow_prohibited_files:
@@ -1211,18 +1218,18 @@ class ExtractUtilsModule:
                 False,
             )
             if process_result is PinnedFileProcessResult.MATCH:
-                self.stats['pinned_found'] += 1
+                self.__increment_stat('pinned_found')
             elif process_result is PinnedFileProcessResult.MISMATCH:
-                self.stats['pinned_mismatch'] += 1
+                self.__increment_stat('pinned_mismatch')
             elif process_result is PinnedFileProcessResult.BAD_FIXUP:
-                self.stats['failed'] += 1
+                self.__increment_stat('failed')
         else:
             self.process_simple_file(
                 file,
                 file_path,
             )
 
-        self.stats['copied'] += 1
+        self.__increment_stat('copied')
         return True
 
     def process_proprietary_files(
@@ -1247,19 +1254,24 @@ class ExtractUtilsModule:
             is_firmware = proprietary_file.kind is ProprietaryFileType.FIRMWARE
             vendor_path = self.proprietary_file_vendor_path(proprietary_file)
 
-            for file in proprietary_file.file_list.files:
-                copied = self.process_file(
-                    file,
-                    source,
-                    backup_source,
-                    vendor_path,
-                    is_firmware,
-                    kang,
-                    allow_prohibited_files=allow_prohibited_files,
+            max_workers = os.cpu_count() or 1
+            with ThreadPoolExecutor(max_workers=max_workers) as exe:
+                results = exe.map(
+                    lambda file: self.process_file(
+                        file,
+                        source,
+                        backup_source,
+                        vendor_path,
+                        is_firmware,
+                        kang,
+                        allow_prohibited_files=allow_prohibited_files,
+                    ),
+                    proprietary_file.file_list.files,
                 )
 
-                if not copied:
-                    all_copied = False
+                for copied in results:
+                    if not copied:
+                        all_copied = False
 
         return all_copied
 
