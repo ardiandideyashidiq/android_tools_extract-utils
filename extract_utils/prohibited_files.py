@@ -6,7 +6,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Callable, List
 
-from extract_utils.utils import Color, color_print
+from extract_utils.console import error, panel
 
 """
 Prohibited blob policy
@@ -58,17 +58,13 @@ def check_prohibited_file(dst: str, file_path: str):
         if not checker(data):
             continue
 
-        color_print(
+        error(
             f'ERROR: Prohibited file detected: {dst}',
-            color=Color.RED,
         )
-        color_print(
+        error(
             f'  Reason: {label} binary signature matched in {Path(dst).name}',
-            color=Color.RED,
         )
-        print()
-        color_print('Policy violation:', color=Color.RED)
-        print(
+        panel(
             """The following categories of files are not allowed:
 
    - Megvii / Face++ related libraries and assets:
@@ -84,6 +80,8 @@ Please look for available shims, or develop one to mitigate these dependencies.
 To extract them anyway for a private/local build, re-run with:
 
 extract-files.py --allow-prohibited-files [...]
-"""
+""",
+            title='Policy violation',
+            style='red',
         )
         sys.exit(1)

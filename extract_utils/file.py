@@ -25,9 +25,8 @@ from typing import (
     Union,
 )
 
+from extract_utils.console import warning
 from extract_utils.utils import (
-    Color,
-    color_print,
     is_valid_line,
     split_lines_into_sections,
     uncomment_line,
@@ -573,9 +572,8 @@ class FileList:
             is_package = False
         elif self.__is_file_package(file):
             if file.is_package:
-                color_print(
+                warning(
                     f'{file.dst}: already a package, no need for -',
-                    color=Color.YELLOW,
                 )
 
             is_package = True

@@ -89,6 +89,13 @@ parser.add_argument(
     help='SHA256 of the download',
 )
 parser.add_argument(
+    '--firmware-source-dir',
+    help=(
+        'directory of a previous vendor tree from which to reuse '
+        'proprietary-firmware files missing from the source'
+    ),
+)
+parser.add_argument(
     '--allow-prohibited-files',
     action='store_true',
     help='Allow extraction of normally-prohibited files',
@@ -103,6 +110,7 @@ parser.add_argument(
 
 
 DOWNLOAD_DIR_ENV_KEY = 'EXTRACT_UTILS_DOWNLOAD_DIR'
+FIRMWARE_SOURCE_DIR_ENV_KEY = 'EXTRACT_UTILS_FIRMWARE_SOURCE_DIR'
 
 
 class ArgsSource(str, Enum):
@@ -126,9 +134,16 @@ class Args:
         self.download_dir: Optional[str] = args.download_dir
         self.download_sha256: Optional[str] = args.download_sha256
         self.allow_prohibited_files: bool = args.allow_prohibited_files
+        self.firmware_source_dir: Optional[str] = args.firmware_source_dir
 
         if self.download_dir is None and DOWNLOAD_DIR_ENV_KEY in os.environ:
             self.download_dir = os.environ[DOWNLOAD_DIR_ENV_KEY]
+
+        if (
+            self.firmware_source_dir is None
+            and FIRMWARE_SOURCE_DIR_ENV_KEY in os.environ
+        ):
+            self.firmware_source_dir = os.environ[FIRMWARE_SOURCE_DIR_ENV_KEY]
 
         self.source: ArgsSource | str = args.source
         with suppress(ValueError):

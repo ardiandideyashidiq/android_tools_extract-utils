@@ -1,0 +1,29 @@
+[project]
+name = "extract-utils"
+version = "0.1.0"
+description = "Python rewrite of the LineageOS bash extract-utils"
+readme = "AGENTS.md"
+requires-python = ">=3.10"
+dependencies = [
+    "py7zr",
+    "rich>=15.0.0",
+]
+
+[project.scripts]
+extract-files = "extract_utils.cli:extract_files"
+extract = "extract_utils.cli:extract"
+convert-dump = "extract_utils.cli:convert_dump"
+sort-blobs-list = "extract_utils.cli:sort_blobs_list"
+
+[build-system]
+requires = ["uv_build>=0.7.19,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
+module-name = "extract_utils"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14.4,<0.15",
+]

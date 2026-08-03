@@ -6,12 +6,14 @@
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 from enum import Enum
 from functools import partial
 from os import path
 from typing import Any, Callable, Iterable, List, Optional, Set
 
+from extract_utils.console import detail, error, info, success, warning
 from extract_utils.extract import (
     convert_dict_extract_fns,
     extract_fns_user_type,
@@ -54,8 +56,6 @@ from extract_utils.prohibited_files import check_prohibited_file
 from extract_utils.source import DiskSource, Source
 from extract_utils.tools import android_root
 from extract_utils.utils import (
-    Color,
-    color_print,
     file_path_sha1,
     parse_lines,
     remove_dir_contents,
@@ -129,7 +129,14 @@ class ProprietaryFile:
     @property
     def printable_path(self):
         assert self.file_list_path is not None
-        return path.relpath(self.file_list_path, android_root)
+        file_list_path = path.realpath(self.file_list_path)
+        android_root_real = path.realpath(android_root)
+        if (
+            path.commonpath([file_list_path, android_root_real])
+            == android_root_real
+        ):
+            return path.relpath(file_list_path, android_root_real)
+        return self.file_list_path
 
     def fix_file_list(self):
         if self.__fix_file_list is not None:
@@ -440,12 +447,70 @@ class RuntimeResourceOverlay:
         self.partition = partition
 
 
+def resolve_device_path(
+    device_rel_path: str,
+    device_path: Optional[str] = None,
+) -> str:
+    """Resolve the physical device tree path.
+
+    Priority: explicit arg -> EXTRACT_UTILS_DEVICE_PATH env -> in-tree
+    (``<android_root>/<device_rel_path>``) -> standalone (the directory of
+    the running ``extract-files.py`` script).
+    """
+    if device_path is None:
+        device_path = os.environ.get('EXTRACT_UTILS_DEVICE_PATH')
+
+    if device_path is not None:
+        return path.realpath(device_path)
+
+    in_tree_device_path = path.join(android_root, device_rel_path)
+    if path.isdir(in_tree_device_path):
+        return in_tree_device_path
+
+    return path.dirname(path.realpath(sys.argv[0]))
+
+
+def resolve_vendor_path(
+    vendor_rel_path: str,
+    vendor: str,
+    device: str,
+    device_rel_path: str,
+    vendor_path: Optional[str] = None,
+) -> str:
+    """Resolve the physical vendor output directory.
+
+    Priority: explicit arg -> EXTRACT_UTILS_VENDOR_PATH env -> in-tree
+    (``<android_root>/<vendor_rel_path>``) -> standalone (``android_vendor_
+    <vendor>_<device>`` next to the device tree).
+    """
+    if vendor_path is None:
+        vendor_path = os.environ.get('EXTRACT_UTILS_VENDOR_PATH')
+
+    if vendor_path is not None:
+        return path.realpath(vendor_path)
+
+    in_tree_vendor_path = path.join(android_root, vendor_rel_path)
+    in_tree_device_path = path.join(android_root, device_rel_path)
+    if path.isdir(in_tree_device_path):
+        return in_tree_vendor_path
+
+    device_path = resolve_device_path(device_rel_path)
+
+    return path.join(
+        path.dirname(device_path),
+        f'android_vendor_{vendor}_{device}',
+    )
+
+
 class ExtractUtilsModule:
     def __init__(
         self,
         device: str,
         vendor: str,
         device_rel_path: Optional[str] = None,
+        vendor_rel_path: Optional[str] = None,
+        device_path: Optional[str] = None,
+        vendor_path: Optional[str] = None,
         blob_fixups: Optional[blob_fixups_user_type] = None,
         lib_fixups: Optional[lib_fixups_user_type] = None,
         namespace_imports: Optional[List[str]] = None,
@@ -464,6 +529,16 @@ class ExtractUtilsModule:
         self.proprietary_files: List[ProprietaryFile] = []
         self.rro_packages: List[RuntimeResourceOverlay] = []
         self.postprocess_fns: List[postprocess_fn_type] = []
+
+        self.stats = {
+            'copied': 0,
+            'fixed_up': 0,
+            'pinned_restored': 0,
+            'pinned_found': 0,
+            'pinned_mismatch': 0,
+            'failed': 0,
+            'firmware': 0,
+        }
 
         self.blob_fixups = flatten_fixups(blob_fixups)
         self.lib_fixups = flatten_fixups(lib_fixups)
@@ -484,9 +559,18 @@ class ExtractUtilsModule:
             device_rel_path = path.join('device', vendor, device)
         self.device_rel_path = device_rel_path
 
-        self.device_path = path.join(android_root, self.device_rel_path)
-        self.vendor_rel_path = path.join('vendor', vendor, device)
-        self.vendor_path = path.join(android_root, self.vendor_rel_path)
+        if vendor_rel_path is None:
+            vendor_rel_path = path.join('vendor', vendor, device)
+        self.vendor_rel_path = vendor_rel_path
+
+        self.device_path = resolve_device_path(device_rel_path, device_path)
+        self.vendor_path = resolve_vendor_path(
+            vendor_rel_path,
+            vendor,
+            device,
+            device_rel_path,
+            vendor_path,
+        )
         self.vendor_rro_path = path.join(self.vendor_path, 'rro_overlays')
 
         if add_firmware_proprietary_file:
@@ -695,9 +779,8 @@ class ExtractUtilsModule:
 
     def write_makefiles(self, legacy: bool, extract_factory: bool):
         if not self.check_elf:
-            color_print(
+            warning(
                 'check_elf = False is deprecated and will be removed in Android 16',
-                color=Color.YELLOW,
             )
 
         bp_path = path.join(self.vendor_path, 'Android.bp')
@@ -750,7 +833,7 @@ class ExtractUtilsModule:
         if not kanged and not generated:
             return
 
-        print(f'Updating {proprietary_file.printable_path}')
+        info(f'Updating {proprietary_file.printable_path}')
 
         proprietary_file.write_to_file()
 
@@ -772,7 +855,7 @@ class ExtractUtilsModule:
             ):
                 continue
 
-            print(f'Parsing {proprietary_file.printable_path}')
+            info(f'Parsing {proprietary_file.printable_path}')
 
             proprietary_file.init_file_list(self, section)
             proprietary_file.parse()
@@ -792,7 +875,7 @@ class ExtractUtilsModule:
             ):
                 continue
 
-            print(f'Regenerating {proprietary_file.printable_path}')
+            info(f'Regenerating {proprietary_file.printable_path}')
 
             proprietary_file.init_file_list(self, None)
             proprietary_file.regenerate(self, source)
@@ -812,24 +895,35 @@ class ExtractUtilsModule:
 
         return False
 
-    def fixup_module_file(self, file: File, file_path: str):
+    def fixup_module_file(self, file: File, file_path: str) -> List[str]:
         # device path is needed for reading patches
         ctx = BlobFixupCtx(self.device_path)
 
+        descriptions: List[str] = []
+
         if FileArgs.FIX_XML in file.args:
-            blob_fixup().fix_xml().run(ctx, file, file_path)
+            blob_fixup_fn = blob_fixup().fix_xml()
+            blob_fixup_fn.run(ctx, file, file_path)
+            descriptions += blob_fixup_fn.describe()
 
         if FileArgs.FIX_SONAME in file.args:
-            blob_fixup().fix_soname().run(ctx, file, file_path)
+            blob_fixup_fn = blob_fixup().fix_soname()
+            blob_fixup_fn.run(ctx, file, file_path)
+            descriptions += blob_fixup_fn.describe()
 
         if FileArgs.STRIP_DEBUG_SECTIONS in file.args:
-            blob_fixup().strip_debug_sections().run(ctx, file, file_path)
+            blob_fixup_fn = blob_fixup().strip_debug_sections()
+            blob_fixup_fn.run(ctx, file, file_path)
+            descriptions += blob_fixup_fn.describe()
 
         # TODO: mark which fixups have been used and print unused ones
         # at the end
         blob_fixup_fn = self.blob_fixups.get(file.dst)
         if blob_fixup_fn is not None:
             blob_fixup_fn.run(ctx, file, file_path)
+            descriptions += blob_fixup_fn.describe()
+
+        return descriptions
 
     # Some duplicate logic between simple copy, kanged copy,
     # and pinned copy, but keep it separate to simplify each function
@@ -845,18 +939,21 @@ class ExtractUtilsModule:
             return
 
         pre_fixup_hash = file_path_sha1(file_path)
-        self.fixup_module_file(file, file_path)
+        descriptions = self.fixup_module_file(file, file_path)
         post_fixup_hash = file_path_sha1(file_path)
 
         if pre_fixup_hash == post_fixup_hash:
-            color_print(
+            warning(
                 f'{file.dst}: file expected to be fixed up, '
                 f'but pre-fixup hash and post-fixup hash are the same',
-                color=Color.YELLOW,
             )
             return
 
-        color_print(f'{file.dst}: fixed up', color=Color.GREEN)
+        success(f'{file.dst}: fixed up')
+        self.stats['fixed_up'] += 1
+
+        for description in descriptions:
+            detail('-', description)
 
     def process_kanged_file(
         self,
@@ -871,7 +968,7 @@ class ExtractUtilsModule:
 
         should_fixup = self.should_fixup_file(file)
         if should_fixup:
-            self.fixup_module_file(file, file_path)
+            descriptions = self.fixup_module_file(file, file_path)
 
             post_fixup_hash = file_path_sha1(file_path)
 
@@ -879,11 +976,10 @@ class ExtractUtilsModule:
         file.set_fixup_hash(post_fixup_hash)
 
         if pre_fixup_hash == post_fixup_hash:
-            color_print(
+            warning(
                 f'{file.dst}: kanged file pinned with hash {file.hash} '
                 f'expected to be fixed up, '
                 f'but pre-fixup hash and post-fixup hash are the same',
-                color=Color.YELLOW,
             )
             return
 
@@ -891,7 +987,11 @@ class ExtractUtilsModule:
         if file.fixup_hash is not None:
             msg += f'and fixup hash {file.fixup_hash}'
 
-        color_print(msg, color=Color.GREEN)
+        success(msg)
+        self.stats['fixed_up'] += 1
+
+        for description in descriptions:
+            detail('-', description)
 
     def process_pinned_file_no_fixups(
         self,
@@ -902,18 +1002,16 @@ class ExtractUtilsModule:
         if file.hash == pre_fixup_hash:
             # Pinned file has NO fixup hash, and the extracted file hash
             # matches the pre-fixup hash
-            color_print(
+            success(
                 f'{file.dst}: {action} pinned file with hash {file.hash} ',
-                color=Color.GREEN,
             )
             return PinnedFileProcessResult.MATCH
 
         # Pinned file has NO fixup hash and the extracted file hash
         # does NOT match the pre-fixup hash
-        color_print(
+        warning(
             f'{file.dst}: {action} pinned file with hash {pre_fixup_hash} '
             f'but expected hash {file.hash}',
-            color=Color.YELLOW,
         )
         return PinnedFileProcessResult.MISMATCH
 
@@ -928,11 +1026,10 @@ class ExtractUtilsModule:
 
         if not should_fixup and file.fixup_hash is not None:
             # Pinned file has a fixup hash but NO fixup function
-            color_print(
+            error(
                 f'{file.dst}: {action} pinned file with hash {file.hash} '
                 f'expected to have fixup hash {file.fixup_hash} '
                 f'but has no fixups',
-                color=Color.RED,
             )
             return PinnedFileProcessResult.BAD_FIXUP
 
@@ -948,19 +1045,17 @@ class ExtractUtilsModule:
         if file.fixup_hash is not None and file.fixup_hash == pre_fixup_hash:
             # Pinned file has a fixup hash, and extracted file hash matches
             # the fixup hash
-            color_print(
+            success(
                 f'{file.dst}: {action} pinned file with fixup hash {file.fixup_hash} ',
-                color=Color.GREEN,
             )
             return PinnedFileProcessResult.MATCH
 
         if file.fixup_hash is not None and file.hash != pre_fixup_hash:
             # Pinned file has a fixup hash and the extracted file hash
             # does not match the pre-fixup hash
-            color_print(
+            warning(
                 f'{file.dst}: {action} pinned file with hash {pre_fixup_hash} '
                 f'expected to have hash {file.hash}',
-                color=Color.YELLOW,
             )
             return PinnedFileProcessResult.MISMATCH
 
@@ -971,10 +1066,9 @@ class ExtractUtilsModule:
             # Pinned file has a fixup function but no fixup hash
             # Print out the fixup hash to let the user update its file
             # TODO: update it automatically?
-            color_print(
+            error(
                 f'{file.dst}: {action} pinned file with hash {file.hash} '
                 f'has fixup hash {post_fixup_hash}',
-                color=Color.RED,
             )
             return PinnedFileProcessResult.MATCH
 
@@ -982,20 +1076,18 @@ class ExtractUtilsModule:
             # Pinned file has a fixup hash and the extracted file
             # matches the hash, but the fixed-up file does not match the
             # fixup hash
-            color_print(
+            error(
                 f'{file.dst}: {action} pinned file with hash {file.hash} '
                 f'expected to have fixup hash {file.fixup_hash}'
                 f'but instead have fixup hash {post_fixup_hash}',
-                color=Color.RED,
             )
             return PinnedFileProcessResult.BAD_FIXUP
 
         # Pinned file has a fixup hash and the extracted file
         # matches the hash, and fixed-up file matches the fixup hash
-        color_print(
+        success(
             f'{file.dst}: {action} pinned file with hash {file.hash} '
             f'and fixup hash {file.fixup_hash}',
-            color=Color.GREEN,
         )
 
         return PinnedFileProcessResult.MATCH
@@ -1007,20 +1099,26 @@ class ExtractUtilsModule:
         backup_dir: str,
     ):
         if not backup_source.copy_file_to_dir(file, backup_dir):
-            color_print(f'Failed to back up {file.dst}', color=Color.YELLOW)
+            warning(f'Failed to back up {file.dst}')
             return
 
-        print(f'Backed up {file.dst}')
+        success(f'Backed up {file.dst}')
 
     def backup_pinned_files(self, backup_dir: str):
         for proprietary_file in self.proprietary_files:
             vendor_path = self.proprietary_file_vendor_path(proprietary_file)
             backup_source = DiskSource(vendor_path)
 
+            # Back up all firmware files (not just pinned ones) so that they
+            # survive cleanup() when updating a vendor tree in place
+            files = proprietary_file.file_list.pinned_files
+            if proprietary_file.kind is ProprietaryFileType.FIRMWARE:
+                files = proprietary_file.file_list.files
+
             printed = False
-            for file in proprietary_file.file_list.pinned_files:
+            for file in files:
                 if not printed:
-                    print(f'Backing up {proprietary_file.printable_path}')
+                    info(f'Backing up {proprietary_file.printable_path}')
                     printed = True
                 self.backup_file(file, backup_source, backup_dir)
 
@@ -1034,11 +1132,14 @@ class ExtractUtilsModule:
         kang: bool,
         allow_prohibited_files: bool = False,
     ) -> bool:
+        if is_firmware:
+            self.stats['firmware'] += 1
+
         file_path = source.get_file_copy_path(file, vendor_path)
 
-        if not kang and file.hash is not None:
-            # If we're not kanging and file is pinned, try copying the backup
-            # file first
+        if not kang and (file.hash is not None or is_firmware):
+            # If we're not kanging and file is pinned or a firmware file,
+            # try copying the backup file first
             # If the backup file does not exist or the hashes do not match,
             # try extracting from source
             # It's okay to extract from source if the hashes of the backup
@@ -1051,6 +1152,11 @@ class ExtractUtilsModule:
             )
 
             if copied:
+                if file.hash is None:
+                    self.process_simple_file(file, file_path)
+                    self.stats['copied'] += 1
+                    return True
+
                 process_result = self.process_pinned_file(
                     file,
                     file_path,
@@ -1058,18 +1164,23 @@ class ExtractUtilsModule:
                 )
 
                 if process_result is PinnedFileProcessResult.MATCH:
+                    self.stats['pinned_restored'] += 1
+                    self.stats['copied'] += 1
                     return True
+
+                if process_result is PinnedFileProcessResult.MISMATCH:
+                    self.stats['pinned_mismatch'] += 1
 
                 if process_result is PinnedFileProcessResult.BAD_FIXUP:
                     # Error out at the end if there's a fixup hash but
                     # there's no fixup function or if the pinned hash
                     # matches the file hash but the fixup hash does not match
                     # Both of these cases denote a bad fixup function
+                    self.stats['failed'] += 1
                     return False
-            else:
-                color_print(
+            elif file.hash is not None:
+                error(
                     f'{file.dst}: pinned file not found in backup, trying source',
-                    color=Color.RED,
                 )
 
         copied = source.copy_file_to_path(
@@ -1079,10 +1190,10 @@ class ExtractUtilsModule:
         )
 
         if not copied:
-            color_print(
+            error(
                 f'{file.dst}: file not found',
-                color=Color.RED,
             )
+            self.stats['failed'] += 1
             return False
 
         if not allow_prohibited_files:
@@ -1094,17 +1205,24 @@ class ExtractUtilsModule:
                 file_path,
             )
         elif file.hash is not None:
-            self.process_pinned_file(
+            process_result = self.process_pinned_file(
                 file,
                 file_path,
                 False,
             )
+            if process_result is PinnedFileProcessResult.MATCH:
+                self.stats['pinned_found'] += 1
+            elif process_result is PinnedFileProcessResult.MISMATCH:
+                self.stats['pinned_mismatch'] += 1
+            elif process_result is PinnedFileProcessResult.BAD_FIXUP:
+                self.stats['failed'] += 1
         else:
             self.process_simple_file(
                 file,
                 file_path,
             )
 
+        self.stats['copied'] += 1
         return True
 
     def process_proprietary_files(
@@ -1124,7 +1242,7 @@ class ExtractUtilsModule:
             ):
                 continue
 
-            print(f'Processing {proprietary_file.printable_path}')
+            info(f'Processing {proprietary_file.printable_path}')
 
             is_firmware = proprietary_file.kind is ProprietaryFileType.FIRMWARE
             vendor_path = self.proprietary_file_vendor_path(proprietary_file)

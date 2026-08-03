@@ -13,6 +13,7 @@ from tarfile import is_tarfile
 from typing import Callable, Dict, Iterable, List, Optional, Set, Union
 from zipfile import ZipFile, is_zipfile
 
+from extract_utils.console import info, warning
 from extract_utils.ext4 import EXT4_MAGIC, EXT4_MAGIC_OFFSET
 from extract_utils.extract_moto_piv import MOTO_PIV_MAGIC, extract_moto_piv
 from extract_utils.extract_recovery import extract_recovery_partition
@@ -25,8 +26,6 @@ from extract_utils.tools import (
     sdat2img_path,
 )
 from extract_utils.utils import (
-    Color,
-    color_print,
     find_file,
     find_files,
     run_cmd,
@@ -176,7 +175,7 @@ def print_file_paths(file_paths: List[str], file_type: str):
 
     file_names = [path.basename(fp) for fp in file_paths]
     file_names_str = ', '.join(file_names)
-    print(f'Found {file_type} files: {file_names_str}')
+    info(f'Found {file_type} files: {file_names_str}')
 
 
 def print_file_path(file_path: str, file_type: str):
@@ -189,7 +188,7 @@ def remove_file_paths(file_paths: Iterable[str]):
 
     file_names = [path.basename(fp) for fp in file_paths]
     file_names_str = ', '.join(file_names)
-    print(f'Deleting {file_names_str}')
+    info(f'Deleting {file_names_str}')
 
     for file_path in file_paths:
         os.remove(file_path)
@@ -203,7 +202,7 @@ def extract_payload_bin(partition: str, file_path: str, output_dir: str):
     # TODO: switch to python extractor to be able to detect partition
     # names to make this process fatal on failure
 
-    print(f'Extracting {partition}')
+    info(f'Extracting {partition}')
 
     try:
         run_cmd(
@@ -369,7 +368,7 @@ def extract_image_file(source: str, dump_dir: str):
     else:
         raise ValueError(f'Unexpected file type at {source}')
 
-    print(f'Extracting file {source}')
+    info(f'Extracting file {source}')
     extract_fn(source, dump_dir)
 
 
@@ -491,7 +490,9 @@ def extract_all_partitions(dump_dir: str, ctx: ExtractCtx):
                 else:
                     extract_partition(partition, dump_dir)
             except Exception as e:
-                print(f'Warning: Failed to extract partition {partition}: {e}')
+                warning(
+                    f'Failed to extract partition {partition}: {e}',
+                )
 
         found_partitions = find_partitions(dump_dir, ctx)
         partitions = find_alternate_partitions(partitions, found_partitions)
@@ -546,7 +547,7 @@ def create_empty_partition_dirs(dump_dir: str, ctx: ExtractCtx):
     missing_partitions = find_partitions(dump_dir, ctx, missing=True)
     for partition in missing_partitions:
         dump_partition_dir = path.join(dump_dir, partition)
-        color_print(f'Partition {partition} not extracted', color=Color.YELLOW)
+        warning(f'Partition {partition} not extracted')
         # Create empty partition dir to prevent re-extraction
         os.makedirs(dump_partition_dir, exist_ok=True)
 
@@ -594,7 +595,7 @@ def run_extract_fns(dump_dir: str, ctx: ExtractCtx):
         processed_files: Set[str] = set()
         for file_path in found_files:
             file_name = path.basename(file_path)
-            print(f'Processing {file_name}')
+            info(f'Processing {file_name}')
             for extract_fn in value.path_fns:
                 processed_file = extract_fn(ctx, file_path, dump_dir)
                 if processed_file is not None:

@@ -18,9 +18,14 @@ from typing import List, Optional
 from urllib.parse import urlparse
 
 from extract_utils.args import ArgsSource
+from extract_utils.console import info, progress, warning
 from extract_utils.extract import ExtractCtx, extract_dump, extract_image_file
 from extract_utils.file import File, FileArgs
-from extract_utils.utils import run_cmd, urlretrieve_resume
+from extract_utils.utils import (
+    file_path_sha1,
+    run_cmd,
+    urlretrieve_resume,
+)
 
 
 class SourceCtx:
@@ -30,11 +35,13 @@ class SourceCtx:
         keep_dump: bool,
         download_dir: Optional[str],
         download_sha256: Optional[str],
+        firmware_source_dir: Optional[str] = None,
     ):
         self.source = source
         self.keep_dump = keep_dump
         self.download_dir = download_dir
         self.download_sha256 = download_sha256
+        self.firmware_source_dir = firmware_source_dir
 
 
 class Source(ABC):
@@ -162,8 +169,8 @@ class AdbSource(Source):
     def __init_adb_connection(self):
         run_cmd(['adb', 'start-server'])
         if not self.__adb_connected():
-            print('No device is online. Waiting for one...')
-            print('Please connect USB and/or enable USB debugging')
+            info('No device is online. Waiting for one...')
+            info('Please connect USB and/or enable USB debugging')
             while not self.__adb_connected():
                 sleep(1)
 
@@ -213,11 +220,39 @@ class AdbSource(Source):
 
 
 class DiskSource(Source):
-    def __init__(self, dump_dir: str):
+    def __init__(
+        self, dump_dir: str, firmware_source_dir: Optional[str] = None
+    ):
         self.dump_dir = dump_dir
+        self.firmware_source_dir = firmware_source_dir
 
     def _copy_firmware(self, file: File, target_file_path: str) -> bool:
-        return self._copy_file_to_path(file, target_file_path)
+        if self._copy_file_to_path(file, target_file_path):
+            return True
+
+        if self.firmware_source_dir is None:
+            return False
+
+        firmware_path = path.join(
+            self.firmware_source_dir,
+            'radio',
+            file.dst,
+        )
+
+        if not path.isfile(firmware_path):
+            return False
+
+        if file.hash is not None and file_path_sha1(firmware_path) != file.hash:
+            warning(
+                f'{file.dst}: firmware source hash mismatch, skipping',
+            )
+            return False
+
+        with suppress(Exception):
+            shutil.copy(firmware_path, target_file_path)
+            return True
+
+        return False
 
     def _copy_file_path(
         self,
@@ -256,9 +291,13 @@ class DiskSource(Source):
         return file_rel_paths
 
 
-def create_disk_source(dump_dir: str, extract_ctx: ExtractCtx):
+def create_disk_source(
+    dump_dir: str,
+    extract_ctx: ExtractCtx,
+    firmware_source_dir: Optional[str] = None,
+):
     extract_dump(dump_dir, extract_ctx)
-    return DiskSource(dump_dir)
+    return DiskSource(dump_dir, firmware_source_dir)
 
 
 @contextmanager
@@ -285,12 +324,16 @@ def create_extractable_source(
 
     with dump_dir_context as dump_dir:
         if extract_image:
-            print(f'Extracting to new dump dir {dump_dir}')
+            info(f'Extracting to new dump dir {dump_dir}')
             extract_image_file(source, dump_dir)
         else:
-            print(f'Using existing dump dir {dump_dir}')
+            info(f'Using existing dump dir {dump_dir}')
 
-        yield create_disk_source(dump_dir, extract_ctx)
+        yield create_disk_source(
+            dump_dir,
+            extract_ctx,
+            ctx.firmware_source_dir,
+        )
 
 
 @contextmanager
@@ -298,15 +341,6 @@ def create_downloadable_source(ctx: SourceCtx, extract_ctx: ExtractCtx):
     source = ctx.source
     source_url = urlparse(ctx.source)
     source_name = path.basename(source_url.path)
-
-    def print_percent(percent: int, first: bool, last: bool):
-        ret = '' if first else '\r'
-        end = '\n' if last else ''
-        print(
-            f'{ret}Downloading {source_name}: {percent}%',
-            end=end,
-            flush=True,
-        )
 
     if ctx.download_dir is not None:
         download_dir_context = nullcontext(ctx.download_dir)
@@ -316,12 +350,21 @@ def create_downloadable_source(ctx: SourceCtx, extract_ctx: ExtractCtx):
     with download_dir_context as download_dir:
         file_path = path.join(download_dir, source_name)
 
-        urlretrieve_resume(
-            source,
-            file_path,
-            expected_sha256=ctx.download_sha256,
-            print_fn=print_percent,
-        )
+        with progress:
+            task_id = progress.add_task(
+                f'Downloading {source_name}',
+                total=100,
+            )
+
+            def print_percent(percent: int, first: bool, last: bool):
+                progress.update(task_id, completed=percent)
+
+            urlretrieve_resume(
+                source,
+                file_path,
+                expected_sha256=ctx.download_sha256,
+                print_fn=print_percent,
+            )
 
         with create_extractable_source(file_path, ctx, extract_ctx) as source:
             try:
@@ -353,8 +396,12 @@ def create_source(ctx: SourceCtx, extract_ctx: ExtractCtx):
 
     if path.isdir(source):
         # Source is a directory, try to extract its contents into itself
-        print(f'Using source dump dir {source}')
-        yield create_disk_source(source, extract_ctx)
+        info(f'Using source dump dir {source}')
+        yield create_disk_source(
+            source,
+            extract_ctx,
+            ctx.firmware_source_dir,
+        )
         return
 
     with create_extractable_source(ctx.source, ctx, extract_ctx) as source:

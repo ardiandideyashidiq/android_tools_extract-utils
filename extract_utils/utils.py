@@ -90,16 +90,20 @@ def file_path_sha256(file_path: str):
 
 
 class Color(str, Enum):
-    RED = '\033[0;31m'
-    GREEN = '\033[0;32m'
-    YELLOW = '\033[1;33m'
-    END = '\033[0m'
+    RED = 'error'
+    GREEN = 'success'
+    YELLOW = 'warning'
 
 
 def color_print(*args: object, color: Color):
-    args_str = ' '.join(str(arg) for arg in args)
-    args_str = color.value + args_str + Color.END.value
-    print(args_str)
+    from extract_utils.console import error, success, warning
+
+    if color == Color.RED:
+        error(*args)
+    elif color == Color.GREEN:
+        success(*args)
+    elif color == Color.YELLOW:
+        warning(*args)
 
 
 @lru_cache(maxsize=None)

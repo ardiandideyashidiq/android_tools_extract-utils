@@ -6,21 +6,22 @@
 from __future__ import annotations
 
 import os
+import sys
 from os import path
 from typing import List, Optional, Set, Tuple
 
 from extract_utils.args import parse_args
+from extract_utils.console import console, error, rule, table
 from extract_utils.extract import ExtractCtx, extract_fns_type
 from extract_utils.file import File
 from extract_utils.module import (
     ExtractUtilsModule,
+    ProprietaryFileType,
 )
 from extract_utils.postprocess import PostprocessCtx
 from extract_utils.source import Source, SourceCtx, create_source
 from extract_utils.tools import android_root
 from extract_utils.utils import (
-    Color,
-    color_print,
     get_module_attr,
     import_module,
 )
@@ -98,9 +99,17 @@ class ExtractUtils:
         vendor: str,
     ) -> Optional[ExtractUtilsModule]:
         module_name = f'{vendor}_{device}'
-        module_path = path.join(
-            android_root, 'device', vendor, device, 'extract-files.py'
-        )
+
+        module_dir = os.environ.get('EXTRACT_UTILS_DEVICE_PATH')
+        if module_dir is None:
+            module_dir = path.join(android_root, 'device', vendor, device)
+            if not path.isdir(module_dir):
+                module_dir = path.join(
+                    path.dirname(path.dirname(path.realpath(sys.argv[0]))),
+                    f'android_device_{vendor}_{device}',
+                )
+
+        module_path = path.join(module_dir, 'extract-files.py')
 
         module = import_module(module_name, module_path)
 
@@ -199,6 +208,7 @@ class ExtractUtils:
                 self.__args.keep_dump,
                 self.__args.download_dir,
                 self.__args.download_sha256,
+                self.__args.firmware_source_dir,
             )
 
             with create_source(source_ctx, extract_ctx) as source:
@@ -206,13 +216,72 @@ class ExtractUtils:
 
                 all_copied = self.process_modules(source)
                 if not all_copied:
-                    color_print(
+                    error(
                         'Some files failed to process, exiting',
-                        color=Color.RED,
                     )
+                    self.print_summary()
                     return
 
             self.postprocess_modules()
 
         self.write_updated_proprietary_files()
         self.write_makefiles()
+        self.print_summary()
+
+    def print_summary(self):
+        rows = []
+        for module in self.__modules:
+            firmware_names = sorted(
+                set(
+                    file.root
+                    for pf in module.proprietary_files
+                    if pf.kind is ProprietaryFileType.FIRMWARE
+                    for file in pf.file_list.files
+                )
+            )
+            partitions = sorted(
+                set(
+                    partition
+                    for pf in module.proprietary_files
+                    if pf.kind is ProprietaryFileType.BLOBS
+                    for partition in pf.file_list.partitions
+                )
+            )
+            total = sum(
+                len(list(pf.file_list.files)) for pf in module.proprietary_files
+            )
+            rows.append(
+                [
+                    f'{module.vendor}/{module.device}',
+                    ', '.join(partitions),
+                    str(total),
+                    str(module.stats['copied']),
+                    str(module.stats['fixed_up']),
+                    str(
+                        module.stats['pinned_restored']
+                        + module.stats['pinned_found']
+                    ),
+                    str(module.stats['pinned_mismatch']),
+                    str(module.stats['firmware']),
+                    ', '.join(firmware_names),
+                    str(module.stats['failed']),
+                ]
+            )
+        tbl = table(
+            'Extraction summary',
+            [
+                'module',
+                'partitions',
+                'blobs',
+                'copied',
+                'fixed up',
+                'pinned ok',
+                'pinned mismatch',
+                'firmware',
+                'firmware names',
+                'failed',
+            ],
+            rows,
+        )
+        rule('Summary')
+        console.print(tbl)

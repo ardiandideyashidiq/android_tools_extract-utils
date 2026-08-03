@@ -13,6 +13,7 @@ from typing import Any, DefaultDict, Iterable, List, Optional, Protocol, TextIO
 
 from extract_utils.bp_builder import BpBuilder, FileBpBuilder
 from extract_utils.bp_encoder import BpJSONEncoder
+from extract_utils.console import warning
 from extract_utils.elf import (
     get_file_machine_bits_libs,
     remove_libs_so_ending,
@@ -26,7 +27,7 @@ from extract_utils.file import (
     FileTree,
 )
 from extract_utils.fixups_lib import lib_fixups_type, run_libs_fixup
-from extract_utils.utils import Color, color_print, file_path_sha1
+from extract_utils.utils import file_path_sha1
 
 ALL_PARTITIONS = [
     'system',
@@ -585,14 +586,17 @@ def write_product_packages(
                 subdirs.add(parts[2])
         overlay_packages.extend(list(subdirs))
     write_packages_inclusion(overlay_packages, ctx.product_mk_out)
+
     # Filter out overlay files for unknown check and assertion
     def is_overlay_file(f: File) -> bool:
-        return any(f.dst.startswith(f'{part}/overlay/') for part in ALL_PARTITIONS)
+        return any(
+            f.dst.startswith(f'{part}/overlay/') for part in ALL_PARTITIONS
+        )
+
     unknown_files = [f for f in base_file_tree if not is_overlay_file(f)]
     for file in unknown_files:
-        color_print(
+        warning(
             f'{file.dst}: does not match known package rules',
-            color=Color.YELLOW,
         )
 
     assert not unknown_files

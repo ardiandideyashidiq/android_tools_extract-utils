@@ -14,6 +14,7 @@ from functools import partial
 from os import path
 from typing import Any, List, Optional, Protocol
 
+from extract_utils.console import error, info, warning
 from extract_utils.elf import file_needs_lib
 from extract_utils.file import File
 from extract_utils.fixups import fixups_type, fixups_user_type
@@ -26,9 +27,7 @@ from extract_utils.tools import (
     stripzip_path,
 )
 from extract_utils.utils import (
-    Color,
     TemporaryWorkingDirectory,
-    color_print,
     run_cmd,
 )
 
@@ -308,13 +307,12 @@ class blob_fixup:
                     git_add_files(patch_files)
                     run_cmd(['git', 'commit', '-m', f'Apply: "{patch}"'])
                 except ValueError as e:
-                    color_print(
+                    error(
                         f'Failed to apply patch {patch}',
-                        color=Color.RED,
                     )
-                    color_print('Git history:', color=Color.RED)
+                    error('Git history:')
                     output = run_cmd(['git', 'log'])
-                    print(output)
+                    info(output)
                     raise e
 
     def patch_dir(self, patches_path: str) -> blob_fixup:
@@ -446,9 +444,8 @@ class blob_fixup:
         *args: Any,
     ) -> blob_fixup:
         if args:
-            color_print(
+            warning(
                 'apktool_patch() no longer takes custom arguments',
-                color=Color.YELLOW,
             )
 
         self.apktool_unpack(patches_path)
@@ -612,6 +609,57 @@ class blob_fixup:
             run()
 
         return True
+
+    def describe(self) -> List[str]:
+        descriptions: List[str] = []
+
+        patchelf_version = path.basename(self.__patchelf_path)
+        descriptions.append(patchelf_version)
+
+        for function, _, _ in self.__functions:
+            fn = getattr(function, 'func', function)
+            fn_name = fn.__name__
+            fn_args = getattr(function, 'args', ())
+
+            if fn_name == 'replace_needed_impl':
+                from_lib, to_lib = fn_args[0], fn_args[1]
+                descriptions.append(f'replace-needed {from_lib} -> {to_lib}')
+            elif fn_name == 'add_needed_impl':
+                descriptions.append(f'add-needed {fn_args[0]}')
+            elif fn_name == 'remove_needed_impl':
+                descriptions.append(f'remove-needed {fn_args[0]}')
+            elif fn_name == 'clear_symbol_version_impl':
+                descriptions.append(f'clear-symbol-version {fn_args[0]}')
+            elif fn_name == 'fix_soname_impl':
+                descriptions.append('fix-soname')
+            elif fn_name == 'binary_regex_replace_impl':
+                descriptions.append(
+                    f'binary-regex-replace {fn_args[0]!r} -> {fn_args[1]!r}'
+                )
+            elif fn_name == 'regex_replace_impl':
+                descriptions.append(
+                    f'regex-replace {fn_args[0]!r} -> {fn_args[1]!r}'
+                )
+            elif fn_name == 'sig_replace_impl':
+                descriptions.append('sig-replace')
+            elif fn_name == 'fix_xml_impl':
+                descriptions.append('fix-xml')
+            elif fn_name == 'add_line_if_missing_impl':
+                descriptions.append(f'add-line-if-missing {fn_args[0]!r}')
+            elif fn_name == 'strip_debug_sections_impl':
+                descriptions.append('strip-debug-sections')
+            elif fn_name == 'patch_impl':
+                descriptions.append(f'patch {fn_args[0]}')
+            elif fn_name == 'apktool_unpack_impl':
+                descriptions.append('apktool-unpack')
+            elif fn_name == 'apktool_pack_impl':
+                descriptions.append('apktool-pack')
+            elif fn_name == 'stripzip_impl':
+                descriptions.append('stripzip')
+            else:
+                descriptions.append(f'call {fn_name}')
+
+        return descriptions
 
 
 blob_fixup_fn_type = blob_fixup
