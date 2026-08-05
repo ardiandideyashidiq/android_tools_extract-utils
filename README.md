@@ -32,10 +32,12 @@ extract-files --device-tree <device-tree-dir> \
   [--vendor-tree <old-vendor-tree>]
 ```
 
+- The firmware dump must be a directory of already-extracted partition dirs
+  (`system/`, `vendor/`, `odm/`, ...).
 - Without `--vendor-tree`, output goes to `android_vendor_<vendor>_<device>`
   next to the device tree.
 - With `--vendor-tree`, the existing vendor tree is updated in place and its
   `radio/` firmware is reused for proprietary-firmware missing from the dump
   (hash-checked when pinned).
 
-Other commands: `extract`, `convert-dump`, `sort-blobs-list`.
+Other command: `sort-blobs-list`.

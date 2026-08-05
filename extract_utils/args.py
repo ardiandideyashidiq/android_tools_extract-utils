@@ -7,33 +7,9 @@ from __future__ import annotations
 
 import argparse
 import os
-from contextlib import suppress
-from enum import Enum
 from typing import Optional
 
 parser = argparse.ArgumentParser(description='Extract utils')
-
-group = parser.add_mutually_exclusive_group()
-group.add_argument(
-    '--extract-all',
-    action='store_true',
-    help='Extract all files from archive',
-)
-group.add_argument(
-    '--only-name',
-    help='only extract module with device name',
-)
-group.add_argument(
-    '--only-common',
-    action='store_true',
-    help='only extract common module',
-)
-group.add_argument(
-    '--only-target',
-    action='store_true',
-    help='only extract target module',
-)
-# TODO: --only-firmware
 
 parser.add_argument(
     '-n',
@@ -71,22 +47,9 @@ parser.add_argument(
     help='generate legacy makefiles',
 )
 parser.add_argument(
-    '--extract-factory',
+    '--allow-prohibited-files',
     action='store_true',
-    help='extract factory files',
-)
-parser.add_argument(
-    '--keep-dump',
-    action='store_true',
-    help='keep the dump directory',
-)
-parser.add_argument(
-    '--download-dir',
-    help='path to directory into which to store downloads',
-)
-parser.add_argument(
-    '--download-sha256',
-    help='SHA256 of the download',
+    help='Allow extraction of normally-prohibited files',
 )
 parser.add_argument(
     '--firmware-source-dir',
@@ -95,49 +58,26 @@ parser.add_argument(
         'proprietary-firmware files missing from the source'
     ),
 )
-parser.add_argument(
-    '--allow-prohibited-files',
-    action='store_true',
-    help='Allow extraction of normally-prohibited files',
-)
 
 parser.add_argument(
     'source',
-    default='adb',
-    help='sources from which to extract',
-    nargs='?',
+    help='firmware dump directory from which to extract',
 )
 
-
-DOWNLOAD_DIR_ENV_KEY = 'EXTRACT_UTILS_DOWNLOAD_DIR'
 FIRMWARE_SOURCE_DIR_ENV_KEY = 'EXTRACT_UTILS_FIRMWARE_SOURCE_DIR'
-
-
-class ArgsSource(str, Enum):
-    ADB = 'adb'
 
 
 class Args:
     def __init__(self, args: argparse.Namespace):
         # Wrap to provide type hints
-        self.only_common: bool = args.only_common
-        self.only_target: bool = args.only_target
-        self.only_name: str = args.only_name
-        self.extract_factory: bool = args.extract_factory
         self.regenerate_makefiles: bool = args.regenerate_makefiles
         self.regenerate: bool = args.regenerate
         self.legacy: bool = args.legacy
-        self.keep_dump: bool = args.keep_dump
         self.no_cleanup: bool = args.no_cleanup
         self.kang: bool = args.kang
         self.section: Optional[str] = args.section
-        self.download_dir: Optional[str] = args.download_dir
-        self.download_sha256: Optional[str] = args.download_sha256
         self.allow_prohibited_files: bool = args.allow_prohibited_files
         self.firmware_source_dir: Optional[str] = args.firmware_source_dir
-
-        if self.download_dir is None and DOWNLOAD_DIR_ENV_KEY in os.environ:
-            self.download_dir = os.environ[DOWNLOAD_DIR_ENV_KEY]
 
         if (
             self.firmware_source_dir is None
@@ -145,18 +85,13 @@ class Args:
         ):
             self.firmware_source_dir = os.environ[FIRMWARE_SOURCE_DIR_ENV_KEY]
 
-        self.source: ArgsSource | str = args.source
-        with suppress(ValueError):
-            self.source = ArgsSource(args.source)
+        self.source: str = args.source
 
         if self.section is not None:
             self.regenerate = False
 
         if self.regenerate_makefiles:
             self.regenerate = False
-
-        if self.extract_factory and self.source == ArgsSource.ADB:
-            raise ValueError('Cannot use --extract-factory with ADB')
 
 
 def parse_args():

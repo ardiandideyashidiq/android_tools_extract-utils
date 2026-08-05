@@ -1,5 +1,4 @@
 line-length = 80
-exclude = ["extract_utils/sdat2img.py"]
 
 [lint]
 extend-select = ['A', 'FA100', 'FA102', 'I']

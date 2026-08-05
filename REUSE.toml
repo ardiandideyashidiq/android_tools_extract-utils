@@ -24,18 +24,8 @@ SPDX-License-Identifier = "Apache-2.0"
 
 [[annotations]]
 path = [
-    "extract_utils/prebuilts/build-tools/linux-x86/bin/brotli",
-]
-precedence = "aggregate"
-SPDX-FileCopyrightText = "Google Inc."
-SPDX-License-Identifier = "MIT"
-
-[[annotations]]
-path = [
     "extract_utils/prebuilts/extract-tools/common/apktool/apktool.jar",
-    "extract_utils/prebuilts/extract-tools/linux-x86/bin/ota_extractor",
     "extract_utils/prebuilts/extract-tools/linux-x86/bin/stripzip",
-    "extract_utils/prebuilts/system/tools/mkbootimg/unpack_bootimg",
 ]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "The LineageOS Project"

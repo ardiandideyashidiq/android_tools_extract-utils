@@ -19,8 +19,6 @@ script_dir = path.dirname(path.realpath(__file__))
 # usage and still needed by extract_utils/module.py and main.py.
 android_root = path.realpath(path.join(script_dir, '..', '..', '..'))
 
-sdat2img_path = path.join(script_dir, 'sdat2img.py')
-
 # Lives inside the package so it ships in wheels and resolves identically
 # from a checkout and an installed wheel.
 prebuilts_dir = path.join(script_dir, 'prebuilts')
@@ -61,11 +59,6 @@ def resolve_tool(
 
 binaries_dir_rel_path = 'prebuilts/extract-tools/linux-x86/bin'
 binaries_dir = path.join(android_root, binaries_dir_rel_path)
-ota_extractor_path = resolve_tool(
-    'EXTRACT_UTILS_OTA_EXTRACTOR',
-    'extract-tools/linux-x86/bin/ota_extractor',
-    binaries_dir_rel_path + '/ota_extractor',
-)
 stripzip_path = resolve_tool(
     'EXTRACT_UTILS_STRIPZIP',
     'extract-tools/linux-x86/bin/stripzip',
@@ -79,14 +72,6 @@ for version in patchelf_versions:
         f'extract-tools/linux-x86/bin/patchelf-{version}',
         f'{binaries_dir_rel_path}/patchelf-{version}',
     )
-
-build_tools_dir_rel_path = 'prebuilts/build-tools/linux-x86/bin'
-build_tools_dir = path.join(android_root, build_tools_dir_rel_path)
-brotli_path = resolve_tool(
-    'EXTRACT_UTILS_BROTLI',
-    'build-tools/linux-x86/bin/brotli',
-    build_tools_dir_rel_path + '/brotli',
-)
 
 common_binaries_dir_rel_path = 'prebuilts/extract-tools/common'
 common_binaries_dir = path.join(android_root, common_binaries_dir_rel_path)
@@ -129,19 +114,4 @@ carriersettings_extractor_path = resolve_tool(
     'lineage/scripts/carriersettings-extractor/carriersettings_extractor.py',
     lineage_scripts_dir_rel_path
     + '/carriersettings-extractor/carriersettings_extractor.py',
-)
-fbpacktool_path = resolve_tool(
-    'EXTRACT_UTILS_FBPACKTOOL',
-    'lineage/scripts/fbpacktool/fbpacktool.py',
-    lineage_scripts_dir_rel_path + '/fbpacktool/fbpacktool.py',
-)
-
-system_tools_dir_rel_path = 'prebuilts/system/tools'
-system_tools_dir = path.join(android_root, system_tools_dir_rel_path)
-mkbootimg_dir_rel_path = 'prebuilts/system/tools/mkbootimg'
-mkbootimg_dir = path.join(android_root, mkbootimg_dir_rel_path)
-unpack_bootimg_path = resolve_tool(
-    'EXTRACT_UTILS_UNPACK_BOOTIMG',
-    'system/tools/mkbootimg/unpack_bootimg',
-    mkbootimg_dir_rel_path + '/unpack_bootimg.py',
 )

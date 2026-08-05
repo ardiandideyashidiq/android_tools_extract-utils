@@ -5,14 +5,11 @@ description = "Python rewrite of the LineageOS bash extract-utils"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "py7zr",
     "rich>=15.0.0",
 ]
 
 [project.scripts]
 extract-files = "extract_utils.cli:extract_files"
-extract = "extract_utils.cli:extract"
-convert-dump = "extract_utils.cli:convert_dump"
 sort-blobs-list = "extract_utils.cli:sort_blobs_list"
 
 [build-system]

@@ -17,22 +17,16 @@ wheels and resolves identically from a checkout or an installed wheel.
 
 | Tool | Layout | License |
 |---|---|---|
-| `brotli` | `build-tools/linux-x86/bin/` | MIT |
-| `ota_extractor` | `extract-tools/linux-x86/bin/` | Apache-2.0 |
 | `patchelf-0_8`/`0_9`/`0_17_2`/`0_18` | `extract-tools/linux-x86/bin/` | GPL-3.0-or-later |
 | `stripzip` | `extract-tools/linux-x86/bin/` | Apache-2.0 |
 | `apktool.jar` | `extract-tools/common/apktool/` | Apache-2.0 |
-| `unpack_bootimg` | `system/tools/mkbootimg/` | Apache-2.0 |
 
 `java` is **not** vendored (a full JDK is too large) — it falls back to system
-`java` via `PATH`. `llvm-strip`/`llvm-objdump`/`fbpacktool.py`/
-`carriersettings_extractor.py` are also not vendored; resolve via env var or
-system `PATH` when needed.
+`java` via `PATH`. `llvm-strip`/`llvm-objdump`/`carriersettings_extractor.py`
+are also not vendored; resolve via env var or system `PATH` when needed.
 
 ## Sources
 
-- `brotli`, `ota_extractor`, `unpack_bootimg`: copied from a prebuilt host
-  tools directory (e.g. `<android>/prebuilts/...` or `host/linux-x86/bin`).
 - `patchelf-*`, `stripzip`, `apktool.jar`: from
   `LineageOS/android_prebuilts_extract-tools` (branch `lineage-23.2`), e.g.:
 

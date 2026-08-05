@@ -7,29 +7,11 @@ from __future__ import annotations
 
 import os
 import shutil
-import tarfile
 from os import path
-from tarfile import is_tarfile
-from typing import Callable, Dict, Iterable, List, Optional, Set, Union
-from zipfile import ZipFile, is_zipfile
+from typing import List, Optional
 
-from extract_utils.console import info, warning
-from extract_utils.ext4 import EXT4_MAGIC, EXT4_MAGIC_OFFSET
-from extract_utils.extract_moto_piv import MOTO_PIV_MAGIC, extract_moto_piv
-from extract_utils.extract_recovery import extract_recovery_partition
+from extract_utils.console import warning
 from extract_utils.file import File
-from extract_utils.lp import LpImage
-from extract_utils.sparse_img import SPARSE_HEADER_MAGIC, unsparse_images
-from extract_utils.tools import (
-    brotli_path,
-    ota_extractor_path,
-    sdat2img_path,
-)
-from extract_utils.utils import (
-    find_file,
-    find_files,
-    run_cmd,
-)
 
 ALTERNATE_PARTITION_PATH_MAP = {
     'product': 'system/product',
@@ -39,389 +21,22 @@ ALTERNATE_PARTITION_PATH_MAP = {
 }
 
 
-BROTLI_EXT = '.new.dat.br'
-SPARSE_DATA_EXT = '.new.dat'
-TRANSFER_LIST_EXT = '.transfer.list'
-SPARSE_CHUNK_SUFFIX = '_sparsechunk'
-PAYLOAD_BIN_FILE_NAME = 'payload.bin'
-SUPER_PARTITION_NAME = 'super'
-SUPER_IMG_NAME = 'super.img'
-
-
-extract_fn_type = Callable[['ExtractCtx', str, str], Optional[str]]
-extract_fn_paths_type = Callable[['ExtractCtx', List[str], str], List[str]]
-
-extract_fns_value_type = Union[extract_fn_type, List[extract_fn_type]]
-extract_fns_dict_type = Dict[str, extract_fns_value_type]
-
-
-class ExtractFn:
-    def __init__(
-        self,
-        key: str,
-        path_fn: Optional[extract_fn_type] = None,
-        path_fns: Optional[List[extract_fn_type]] = None,
-        paths_fn: Optional[extract_fn_paths_type] = None,
-    ):
-        if path_fn is not None:
-            assert path_fns is None
-            path_fns = [path_fn]
-
-        self.key = key
-        self.path_fns = path_fns
-        self.paths_fn = paths_fn
-
-
-extract_fns_type = List[ExtractFn]
-extract_fns_user_type = Union[extract_fns_dict_type, extract_fns_type]
-
-
 class ExtractCtx:
     def __init__(
         self,
-        extract_fns: Optional[extract_fns_type] = None,
         extract_partitions: Optional[List[str]] = None,
         firmware_files: Optional[List[File]] = None,
-        factory_files: Optional[List[File]] = None,
     ):
-        if extract_fns is None:
-            extract_fns = []
         if extract_partitions is None:
             extract_partitions = []
         if firmware_files is None:
             firmware_files = []
-        if factory_files is None:
-            factory_files = []
 
-        # Files for extract functions are extracted if their name
-        # matches the regex
-        self.extract_fns = extract_fns
         # Files for partitions are extracted if, after removing the
         # extension, their name matches a partition
         self.extract_partitions = extract_partitions
         # Files are extracted if their name matches as-is
         self.firmware_files = firmware_files
-        self.factory_files = factory_files
-
-
-def find_alternate_partitions(
-    extract_partitions: List[str],
-    found_partitions: Iterable[str],
-):
-    new_extract_partitions: List[str] = []
-    for partition in extract_partitions:
-        if partition in found_partitions:
-            continue
-
-        alternate_partition_path = ALTERNATE_PARTITION_PATH_MAP.get(partition)
-        if alternate_partition_path is None:
-            continue
-
-        alternate_partition, _ = alternate_partition_path.split('/', 1)
-        if (
-            alternate_partition in found_partitions
-            or alternate_partition in new_extract_partitions
-        ):
-            continue
-
-        new_extract_partitions.append(alternate_partition)
-
-    return new_extract_partitions
-
-
-def find_sparse_raw_paths(partition: str, input_path: str):
-    magic = SPARSE_HEADER_MAGIC.to_bytes(4, 'little')
-    return find_files(input_path, partition, magic=magic)
-
-
-def find_erofs_path(partition: str, input_path: str):
-    magic = 0xE0F5E1E2.to_bytes(4, 'little')
-    return find_file(input_path, partition, magic=magic, position=1024)
-
-
-def find_ext4_path(partition: str, input_path: str):
-    return find_file(
-        input_path,
-        partition,
-        magic=EXT4_MAGIC,
-        position=EXT4_MAGIC_OFFSET,
-    )
-
-
-def find_payload_path(file_name: str, input_path: str):
-    return find_file(input_path, name=file_name, magic=b'CrAU')
-
-
-def find_super_img_path(partition: str, input_path: str):
-    magic = 0x616C4467.to_bytes(4, 'little')
-    return find_file(input_path, partition, magic=magic, position=4096)
-
-
-def find_brotli_path(partition: str, input_path: str):
-    return find_file(input_path, partition, ext=BROTLI_EXT)
-
-
-def find_sparse_data_path(partition: str, input_path: str):
-    return find_file(input_path, partition, ext=SPARSE_DATA_EXT)
-
-
-def find_moto_piv_path(partition: str, input_path: str):
-    return find_file(input_path, partition, magic=MOTO_PIV_MAGIC)
-
-
-def print_file_paths(file_paths: List[str], file_type: str):
-    if not file_paths:
-        return
-
-    file_names = [path.basename(fp) for fp in file_paths]
-    file_names_str = ', '.join(file_names)
-    info(f'Found {file_type} files: {file_names_str}')
-
-
-def print_file_path(file_path: str, file_type: str):
-    print_file_paths([file_path], file_type)
-
-
-def remove_file_paths(file_paths: Iterable[str]):
-    if not file_paths:
-        return
-
-    file_names = [path.basename(fp) for fp in file_paths]
-    file_names_str = ', '.join(file_names)
-    info(f'Deleting {file_names_str}')
-
-    for file_path in file_paths:
-        os.remove(file_path)
-
-
-def remove_file_path(file_path: str):
-    remove_file_paths([file_path])
-
-
-def extract_payload_bin(partition: str, file_path: str, output_dir: str):
-    # TODO: switch to python extractor to be able to detect partition
-    # names to make this process fatal on failure
-
-    info(f'Extracting {partition}')
-
-    try:
-        run_cmd(
-            [
-                ota_extractor_path,
-                '--payload',
-                file_path,
-                '--output-dir',
-                output_dir,
-                '--partitions',
-                partition,
-            ],
-        )
-    except ValueError:
-        pass
-
-
-def partition_chunk_index(file_path: str):
-    _, chunk_index = path.splitext(file_path)
-
-    return int(chunk_index[1:])
-
-
-def extract_sparse_raw_img(file_paths: List[str], output_dir: str):
-    file_path = file_paths[0]
-    file_name = path.basename(file_path)
-
-    # Split extension to remove chunk index x from
-    # partition.img_sparsechunk.x files
-    base_file_name, _ = path.splitext(file_name)
-
-    if base_file_name.endswith(SPARSE_CHUNK_SUFFIX):
-        # Sparse chunk, remove _sparsechunk to get the partition name
-        output_file_name = base_file_name[: -len(SPARSE_CHUNK_SUFFIX)]
-    else:
-        # Rename single sparse image to _sparsechunk.0 to avoid naming conflicts
-        assert len(file_paths) == 1
-        output_file_name = file_name
-        sparse_file_path = f'{file_path}{SPARSE_CHUNK_SUFFIX}.0'
-        os.rename(file_path, sparse_file_path)
-        file_paths.remove(file_path)
-        file_paths.append(sparse_file_path)
-
-    file_paths.sort(key=partition_chunk_index)
-    output_file_path = path.join(output_dir, output_file_name)
-
-    unsparse_images(file_paths, output_file_path)
-
-
-def extract_super_img(partition: str, file_path: str, output_dir: str):
-    with open(file_path, 'rb') as i:
-        output_file_path = path.join(output_dir, f'{partition}.img')
-        image = LpImage(i)
-        image.extract_partition(partition, output_file_path)
-
-
-def extract_brotli_img(file_path: str, output_path: str):
-    file_name = path.basename(file_path)
-    output_file_name, _ = path.splitext(file_name)
-    output_file_path = path.join(output_path, output_file_name)
-
-    run_cmd(
-        [
-            brotli_path,
-            '-d',
-            file_path,
-            '-o',
-            output_file_path,
-        ]
-    )
-
-
-def extract_sparse_data_img(file_path: str, output_path: str):
-    assert file_path.endswith(SPARSE_DATA_EXT)
-
-    base_file_path = file_path[: -len(SPARSE_DATA_EXT)]
-    transfer_file_path = f'{base_file_path}{TRANSFER_LIST_EXT}'
-
-    base_file_name = path.basename(base_file_path)
-    img_file_name = f'{base_file_name}.img'
-
-    output_file_path = path.join(output_path, img_file_name)
-
-    run_cmd(
-        [
-            sdat2img_path,
-            transfer_file_path,
-            file_path,
-            output_file_path,
-        ]
-    )
-
-
-def extract_erofs(file_path: str, output_path: str):
-    base_file_name = path.basename(file_path)
-
-    partition_name, _ = path.splitext(base_file_name)
-    partition_output_path = path.join(output_path, partition_name)
-    os.mkdir(partition_output_path)
-
-    run_cmd(
-        [
-            'fsck.erofs',
-            f'--extract={partition_output_path}',
-            file_path,
-        ],
-    )
-
-
-def extract_ext4(file_path: str, output_path: str):
-    base_file_name = path.basename(file_path)
-
-    partition_name, _ = path.splitext(base_file_name)
-    partition_output_path = path.join(output_path, partition_name)
-    os.mkdir(partition_output_path)
-
-    run_cmd(
-        [
-            'debugfs',
-            '-R',
-            f'rdump / {partition_output_path}',
-            file_path,
-        ],
-    )
-
-    # TODO: check for symlinks like the old code?
-
-
-def extract_zip(source: str, dump_dir: str):
-    with ZipFile(source) as zip_file:
-        for info in zip_file.infolist():
-            if info.is_dir():
-                continue
-
-            output_file_path = path.join(dump_dir, info.filename)
-            output_dir = path.dirname(output_file_path)
-            os.makedirs(output_dir, exist_ok=True)
-
-            with zip_file.open(info) as z:
-                with open(output_file_path, 'wb') as f:
-                    shutil.copyfileobj(z, f)
-
-
-def extract_tar(source: str, dump_dir: str):
-    with tarfile.open(source, 'r:*') as tar:
-        tar.extractall(dump_dir)
-
-
-def extract_7z(source: str, dump_dir: str):
-    import py7zr
-
-    with py7zr.SevenZipFile(source, 'r') as archive:
-        archive.extractall(dump_dir)
-
-
-def extract_image_file(source: str, dump_dir: str):
-    if is_zipfile(source):
-        extract_fn = extract_zip
-    elif is_tarfile(source):
-        extract_fn = extract_tar
-    elif source.endswith('.7z'):
-        extract_fn = extract_7z
-    else:
-        raise ValueError(f'Unexpected file type at {source}')
-
-    info(f'Extracting file {source}')
-    extract_fn(source, dump_dir)
-
-
-def extract_firmware_partition(partition: str, dump_dir: str):
-    payload_bin_path = find_payload_path(PAYLOAD_BIN_FILE_NAME, dump_dir)
-    if payload_bin_path:
-        extract_payload_bin(partition, payload_bin_path, dump_dir)
-
-
-def extract_partition(partition: str, dump_dir: str):
-    payload_bin_path = find_payload_path(PAYLOAD_BIN_FILE_NAME, dump_dir)
-    if payload_bin_path:
-        extract_payload_bin(partition, payload_bin_path, dump_dir)
-
-    super_img_path = find_super_img_path(SUPER_PARTITION_NAME, dump_dir)
-    if super_img_path:
-        extract_super_img(partition, super_img_path, dump_dir)
-
-    sparse_raw_paths = find_sparse_raw_paths(partition, dump_dir)
-    if sparse_raw_paths:
-        print_file_paths(sparse_raw_paths, 'sparse raw')
-        extract_sparse_raw_img(sparse_raw_paths, dump_dir)
-        remove_file_paths(sparse_raw_paths)
-
-    moto_piv_path = find_moto_piv_path(partition, dump_dir)
-    if moto_piv_path:
-        print_file_path(moto_piv_path, 'Moto PIV')
-        extract_moto_piv(moto_piv_path, dump_dir)
-        remove_file_path(moto_piv_path)
-
-    brotli_img_path = find_brotli_path(partition, dump_dir)
-    if brotli_img_path:
-        print_file_path(brotli_img_path, 'brotli')
-        extract_brotli_img(brotli_img_path, dump_dir)
-        remove_file_path(brotli_img_path)
-
-    sparse_data_path = find_sparse_data_path(partition, dump_dir)
-    if sparse_data_path:
-        print_file_path(sparse_data_path, 'sparse data')
-        extract_sparse_data_img(sparse_data_path, dump_dir)
-        remove_file_path(sparse_data_path)
-
-    erofs_path = find_erofs_path(partition, dump_dir)
-    if erofs_path:
-        print_file_path(erofs_path, 'EROFS')
-        extract_erofs(erofs_path, dump_dir)
-        remove_file_path(erofs_path)
-
-    ext4_path = find_ext4_path(partition, dump_dir)
-    if ext4_path:
-        print_file_path(ext4_path, 'EXT4')
-        extract_ext4(ext4_path, dump_dir)
-        remove_file_path(ext4_path)
 
 
 def find_partitions(dump_dir: str, ctx: ExtractCtx, missing: bool = False):
@@ -456,87 +71,12 @@ def find_firmware_files(dump_dir: str, ctx: ExtractCtx, missing: bool = False):
     return _find_files(dump_dir, ctx.firmware_files, missing)
 
 
-def find_factory_files(dump_dir: str, ctx: ExtractCtx, missing: bool = False):
-    return _find_files(dump_dir, ctx.factory_files, missing)
-
-
-def find_firmware_partitions(
-    dump_dir: str,
-    ctx: ExtractCtx,
-    missing: bool = False,
-):
-    files = find_firmware_files(dump_dir, ctx, missing)
-
-    partitions: List[str] = []
-    for file in files:
-        partition, _ = path.splitext(file.dst)
-        partitions.append(partition)
-
-    return partitions
-
-
-def extract_all_partitions(dump_dir: str, ctx: ExtractCtx):
-    normal_partitions = find_partitions(dump_dir, ctx, missing=True)
-    firmware_partitions = find_firmware_partitions(dump_dir, ctx, missing=True)
-    partitions = normal_partitions + firmware_partitions
-
-    while partitions:
-        for partition in partitions:
-            try:
-                if partition == 'recovery':
-                    extract_recovery_partition(partition, dump_dir)
-                elif partition in firmware_partitions:
-                    extract_firmware_partition(partition, dump_dir)
-                else:
-                    extract_partition(partition, dump_dir)
-            except Exception as e:
-                warning(
-                    f'Failed to extract partition {partition}: {e}',
-                )
-
-        found_partitions = find_partitions(dump_dir, ctx)
-        partitions = find_alternate_partitions(partitions, found_partitions)
-
-
-def _move_files(dump_dir: str, files: List[File]):
-    firmware_files = _find_files(dump_dir, files, missing=True)
-    for file in firmware_files:
-        for file_name in [file.src, file.dst]:
-            file_path = find_file(dump_dir, name=file_name)
-            if not file_path:
-                continue
-
-            shutil.move(file_path, dump_dir)
-
-
-def move_firmware_files(dump_dir: str, ctx: ExtractCtx):
-    return _move_files(dump_dir, ctx.firmware_files)
-
-
-def move_factory_files(dump_dir: str, ctx: ExtractCtx):
-    return _move_files(dump_dir, ctx.factory_files)
-
-
 def extract_dump(dump_dir: str, ctx: ExtractCtx):
     should_extract = filter_already_extracted(dump_dir, ctx)
     if not should_extract:
         move_sar_system_paths(dump_dir)
         return
 
-    run_extract_fns(dump_dir, ctx)
-
-    sparse_raw_paths = find_sparse_raw_paths(SUPER_PARTITION_NAME, dump_dir)
-    if sparse_raw_paths:
-        print_file_paths(sparse_raw_paths, 'sparse raw')
-        extract_sparse_raw_img(sparse_raw_paths, dump_dir)
-        remove_file_paths(sparse_raw_paths)
-
-    extract_all_partitions(dump_dir, ctx)
-
-    run_extract_fns(dump_dir, ctx)
-
-    move_firmware_files(dump_dir, ctx)
-    move_factory_files(dump_dir, ctx)
     move_sar_system_paths(dump_dir)
     move_alternate_partition_paths(dump_dir)
 
@@ -550,58 +90,6 @@ def create_empty_partition_dirs(dump_dir: str, ctx: ExtractCtx):
         warning(f'Partition {partition} not extracted')
         # Create empty partition dir to prevent re-extraction
         os.makedirs(dump_partition_dir, exist_ok=True)
-
-
-def convert_dict_extract_fns(dict_extract_fns: extract_fns_dict_type):
-    extract_fns: extract_fns_type = []
-    for extract_pattern, extract_fn in dict_extract_fns.items():
-        if isinstance(extract_fn, list):
-            # TODO: fix typing
-            extract_fns.append(
-                ExtractFn(
-                    key=extract_pattern,
-                    path_fns=extract_fn,  # type: ignore
-                )
-            )
-        else:
-            extract_fns.append(
-                ExtractFn(
-                    key=extract_pattern,
-                    path_fn=extract_fn,
-                )
-            )
-
-    return extract_fns
-
-
-def run_extract_fns(dump_dir: str, ctx: ExtractCtx):
-    for value in ctx.extract_fns:
-        extract_pattern = value.key
-
-        found_files = find_files(dump_dir, regex=extract_pattern)
-
-        print_file_paths(found_files, f'pattern: "{extract_pattern}"')
-
-        if not found_files:
-            continue
-
-        if value.paths_fn is not None:
-            processed_files_list = value.paths_fn(ctx, found_files, dump_dir)
-            remove_file_paths(processed_files_list)
-            continue
-
-        assert value.path_fns is not None
-
-        processed_files: Set[str] = set()
-        for file_path in found_files:
-            file_name = path.basename(file_path)
-            info(f'Processing {file_name}')
-            for extract_fn in value.path_fns:
-                processed_file = extract_fn(ctx, file_path, dump_dir)
-                if processed_file is not None:
-                    processed_files.add(processed_file)
-
-        remove_file_paths(processed_files)
 
 
 def move_alternate_partition_paths(dump_dir: str):
@@ -639,5 +127,4 @@ def move_sar_system_paths(dump_dir: str):
 def filter_already_extracted(dump_dir: str, ctx: ExtractCtx):
     ctx.extract_partitions = find_partitions(dump_dir, ctx, missing=True)
     ctx.firmware_files = find_firmware_files(dump_dir, ctx, missing=True)
-    ctx.factory_files = find_factory_files(dump_dir, ctx, missing=True)
-    return ctx.extract_partitions or ctx.firmware_files or ctx.factory_files
+    return ctx.extract_partitions or ctx.firmware_files

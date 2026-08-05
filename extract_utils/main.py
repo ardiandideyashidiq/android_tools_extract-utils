@@ -12,7 +12,7 @@ from typing import List, Optional, Set, Tuple
 
 from extract_utils.args import parse_args
 from extract_utils.console import console, error, rule, table
-from extract_utils.extract import ExtractCtx, extract_fns_type
+from extract_utils.extract import ExtractCtx
 from extract_utils.file import File
 from extract_utils.module import (
     ExtractUtilsModule,
@@ -38,19 +38,8 @@ class ExtractUtils:
 
         self.__args = parse_args()
 
-        self.__modules: List[ExtractUtilsModule] = []
-        if self.__args.only_name:
-            all_modules = [device_module] + common_modules
-            for module in all_modules:
-                if module.device == self.__args.only_name:
-                    self.__modules.append(module)
-        elif self.__args.only_target:
-            self.__modules.append(device_module)
-        elif self.__args.only_common:
-            self.__modules.extend(common_modules)
-        else:
-            self.__modules = [device_module]
-            self.__modules.extend(common_modules)
+        self.__modules: List[ExtractUtilsModule] = [device_module]
+        self.__modules.extend(common_modules)
 
     @classmethod
     def device_with_commons(
@@ -128,7 +117,6 @@ class ExtractUtils:
                 source,
                 self.__args.kang,
                 self.__args.no_cleanup,
-                self.__args.extract_factory,
                 self.__args.section,
                 self.__args.allow_prohibited_files,
             )
@@ -166,16 +154,11 @@ class ExtractUtils:
 
     def write_makefiles(self):
         for module in self.__modules:
-            module.write_makefiles(
-                self.__args.legacy,
-                self.__args.extract_factory,
-            )
+            module.write_makefiles(self.__args.legacy)
 
     def run(self):
-        extract_fns: extract_fns_type = []
         extract_partitions: Set[str] = set()
         firmware_files: List[File] = []
-        factory_files: List[File] = []
 
         self.parse_modules()
 
@@ -184,30 +167,20 @@ class ExtractUtils:
 
         if not self.__args.regenerate_makefiles:
             for module in self.__modules:
-                extract_fns.extend(module.extract_fns)
-
                 extract_partitions.update(
                     module.get_extract_partitions(self.__args.section),
                 )
                 firmware_files.extend(
                     module.get_firmware_files(),
                 )
-                factory_files.extend(
-                    module.get_factory_files(),
-                )
 
             extract_ctx = ExtractCtx(
-                extract_fns,
                 list(extract_partitions),
                 firmware_files,
-                factory_files,
             )
 
             source_ctx = SourceCtx(
                 self.__args.source,
-                self.__args.keep_dump,
-                self.__args.download_dir,
-                self.__args.download_sha256,
                 self.__args.firmware_source_dir,
             )
 
